@@ -1,3 +1,4 @@
+import re
 import unicodedata
 import jieba
 from pypinyin import lazy_pinyin, Style
@@ -82,3 +83,38 @@ class JAFrontend:
                     result.append(surface)
 
         return "".join(result)
+
+
+class ARFrontend:
+    def __init__(self):
+        # Eastern Arabic / Indic numerals → ASCII
+        self.NUMERAL_MAP = str.maketrans(
+            '0123456789۰۱۲۳۴۵۶۷۸۹',
+            '٠١٢٣٤٥٦٧٨٩٠١٢٣٤٥٦٧٨٩'
+        )
+        # Punctuation normalisation: Arabic/unusual → Western equivalent
+        self.PUNCT_MAP = str.maketrans({
+            ',':  '،',
+            ';':  '؛',
+            '?':  '؟',
+            '\u200b': '',  
+            '\u2018': "'",
+            '\u2019': "'",
+            '\u2014': '-',
+            '\u2013': '-',
+        })
+        # Squash repeated punc
+        # (harryjulian): This will have the side-effect of removing ellipses for now
+        self.REPEATED_PUNCT = re.compile(
+            r'([،؛؟!\.\-,;?])\1+'
+        )
+
+    def __call__(self, text: str) -> str:
+        if not text.strip():
+            return ""
+        text = unicodedata.normalize("NFKC", text) # NFKC normalizes full-width alphanumerics and punctuation
+        text = text.replace('\u0640', '') # Remove Tatweel
+        text = text.translate(self.NUMERAL_MAP) # Use Arabic Numerals instead of Western Digits
+        text = text.translate(self.PUNCT_MAP) # Transform all Western punc back to arabic punc
+        text = self.REPEATED_PUNCT.sub(r'\1', text) # Multiple punc -> down to 1
+        return text

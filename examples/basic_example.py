@@ -1,5 +1,7 @@
 import os
 import soundfile as sf
+import sys
+sys.path.append("../neutts")
 from neutts import NeuTTS
 import torch
 
@@ -31,7 +33,7 @@ def main(input_text, ref_audio_path, ref_text, backbone, output_path="output.wav
         ref_codes = torch.load(ref_audio_path.replace(".wav", ".pt"))
 
     print(f"Generating audio for input text: {input_text}")
-    wav = tts.infer(input_text, ref_codes, ref_text)
+    wav = tts.infer(input_text, ref_codes, ref_text, language="arabic")
 
     print(f"Saving output to {output_path}")
     sf.write(output_path, wav, 24000)

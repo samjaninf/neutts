@@ -55,6 +55,7 @@ LANG_INFO = {
     "korean":     {"code": "ko",    "token": "<|KO|>"},
     "chinese":    {"code": "zh",    "token": "<|ZH|>"},
     "urdu":       {"code": "ur",    "token": "<|UR|>"},
+    "arabic":       {"code": "ar",    "token": "<|AR|>"},
 }
 # fmt: on
 
@@ -98,6 +99,16 @@ def _get_text_frontend(language: str):
                     "Ensure preprocessing.py is on your Python path."
                 ) from e
             _FRONTENDS[language] = ZHFrontend()
+        elif language == "arabic":
+            try:
+                from .preprocessing import ARFrontend  # noqa: PLC0415
+            except ImportError as e:
+                raise ImportError(
+                    "Chinese text processing requires the 'preprocessing' module "
+                    "and its dependencies (jieba, pypinyin). "
+                    "Ensure preprocessing.py is on your Python path."
+                ) from e
+            _FRONTENDS[language] = ARFrontend()
         else:
             _FRONTENDS[language] = None
     return _FRONTENDS[language]
@@ -199,6 +210,7 @@ class NeuTTS:
         self._use_lang_token = (
             False  # set by _load_backbone for multilingual torch models
         )
+        self._use_cfg = False
 
         self._load_backbone(backbone_repo, backbone_device)
 
@@ -310,7 +322,7 @@ class NeuTTS:
 
             self._is_quantized_model = True
             self._setup_ggml_template()
-            self.input_format = self.backbone.metadata.get("neuphonic.input_format", "phonemes")
+            self.input_format = self.backbone.metadata.get("neuphonic.input_format", "bpe")
 
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(backbone_repo)
@@ -332,10 +344,7 @@ class NeuTTS:
                     )
                 self._supported_langs = neuphonic_cfg["supported_langs"]
                 self._use_lang_token = neuphonic_cfg["use_lang_token"]
-                if neuphonic_cfg["use_cfg"]:
-                    raise NotImplementedError(
-                        "This model requires CFG inference, which is not currently supported."
-                    )
+                self._use_cfg = neuphonic_cfg["use_cfg"]
 
     def _load_codec(self, codec_repo: str, codec_device: str) -> None:
         """Load the neural codec used to encode and decode speech tokens.
@@ -497,15 +506,10 @@ class NeuTTS:
         else:
             ref_text = _normalize_text(ref_text, language or "")
             input_text = _normalize_text(input_text, language or "")
-            messages = []
+            lang_token = ""
             if self._use_lang_token:
                 lang_token = LANG_INFO[language]["token"]
-                messages.append({"role": "system", "content": lang_token})
-            messages.append({"role": "user", "content": f"{ref_text} {input_text}"})
-            messages.append({"role": "assistant", "content": codes_str})
-            prompt = self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=False
-            )
+            prompt = f"""{lang_token}<|TEXT_PROMPT_START|>{ref_text} {input_text}<|TEXT_PROMPT_END|><|SPEECH_GENERATION_START|>{codes_str}"""
 
         return prompt
 
@@ -536,6 +540,7 @@ class NeuTTS:
             ]
             if self._use_lang_token:
                 # language drives the lang token; it is required
+                print(self._use_lang_token)
                 if language is None:
                     raise ValueError(
                         "This model requires a language token. Please provide a `language` "
@@ -600,6 +605,7 @@ class NeuTTS:
         ref_codes: np.ndarray | torch.Tensor,
         ref_text: str,
         language: str | None = None,
+        cfg_scale: float = 1.0,
     ) -> np.ndarray:
         """Synthesise speech from text, conditioned on a reference voice.
 
@@ -621,7 +627,7 @@ class NeuTTS:
         if self._is_quantized_model:
             output_str = self._infer_ggml(ref_codes, ref_text, text, language=language)
         else:
-            output_str = self._infer_torch(ref_codes, ref_text, text, language=language)
+            output_str = self._infer_torch(ref_codes, ref_text, text, language=language, cfg_scale=cfg_scale)
 
         # Decode
         wav = self._decode(output_str)
@@ -725,6 +731,7 @@ class NeuTTS:
         ref_text: str,
         text: str,
         language: str | None = None,
+        cfg_scale: float = 1.0,
     ) -> str:
         """Run a single forward pass through the torch backbone.
 
@@ -733,11 +740,16 @@ class NeuTTS:
             ref_text: Transcript of the reference audio.
             text: Input text to synthesise.
             language: English language name. Required when ``use_lang_token`` is True.
+            cfg_scale: Classifier-free guidance scale. Only used when ``_use_cfg`` is True.
         Returns:
             str: Raw model output containing generated speech tokens.
         """
+        if self._use_cfg:
+            return self._infer_torch_cfg(ref_codes, ref_text, text, language=language, cfg_scale=cfg_scale)
+
         prompt = self._apply_chat_template(ref_codes, ref_text, text, language=language)
         prompt_ids = self.tokenizer.encode(prompt)
+        print(self.tokenizer.decode(prompt_ids))
         prompt_tensor = torch.tensor(prompt_ids).unsqueeze(0).to(self.backbone.device)
         speech_end_id = self.tokenizer.convert_tokens_to_ids("<|SPEECH_GENERATION_END|>")
         with torch.no_grad():
@@ -756,6 +768,161 @@ class NeuTTS:
             output_tokens[0, input_length:].cpu().numpy().tolist(), add_special_tokens=False
         )
         return output_str
+
+    def _build_cfg_input_ids(
+        self,
+        ref_codes,
+        ref_text: str,
+        input_text: str,
+        language: str | None = None,
+    ) -> tuple[list[int], list[int], list[int], list[int]]:
+        """Build conditional and unconditional token ID sequences for CFG inference.
+
+        The unconditional sequence has empty text and is left-padded to the same
+        length as the conditional sequence so both can be batched together.
+
+        Returns:
+            (cond_ids, cond_mask, uncond_ids, uncond_mask)
+        """
+        speech_replace = self.tokenizer.convert_tokens_to_ids("<|SPEECH_REPLACE|>")
+        speech_gen_start = self.tokenizer.convert_tokens_to_ids("<|SPEECH_GENERATION_START|>")
+        text_replace = self.tokenizer.convert_tokens_to_ids("<|TEXT_REPLACE|>")
+        text_prompt_start = self.tokenizer.convert_tokens_to_ids("<|TEXT_PROMPT_START|>")
+        text_prompt_end = self.tokenizer.convert_tokens_to_ids("<|TEXT_PROMPT_END|>")
+
+        if isinstance(ref_codes, torch.Tensor):
+            codes_list = ref_codes.tolist()
+        else:
+            codes_list = list(ref_codes)
+        codes_str = "".join([f"<|speech_{i}|>" for i in codes_list])
+        codes = self.tokenizer.encode(codes_str, add_special_tokens=False)
+
+        ref_ids = self.tokenizer.encode(ref_text, add_special_tokens=False)
+        gen_ids = self.tokenizer.encode(f" {input_text}", add_special_tokens=False)
+
+        lang_prefix = LANG_INFO[language]["token"] if (self._use_lang_token and language) else ""
+        base_ids = self.tokenizer.encode(f"{lang_prefix}<|TEXT_REPLACE|><|SPEECH_REPLACE|>", add_special_tokens=True)
+        text_replace_idx = base_ids.index(text_replace)
+
+        # conditional: full ref + generation text
+        cond_ids = (
+            base_ids[:text_replace_idx]
+            + [text_prompt_start]
+            + ref_ids
+            + gen_ids
+            + [text_prompt_end]
+            + base_ids[text_replace_idx + 1:]
+        )
+        speech_replace_idx = cond_ids.index(speech_replace)
+        cond_ids = cond_ids[:speech_replace_idx] + [speech_gen_start] + codes
+        cond_mask = [1] * len(cond_ids)
+
+        # unconditional: empty text, left-padded to match conditional length
+        left_padding = [self.tokenizer.pad_token_id] * len(ref_ids + gen_ids)
+        uncond_ids = (
+            left_padding
+            + base_ids[:text_replace_idx]
+            + [text_prompt_start]
+            + [text_prompt_end]
+            + base_ids[text_replace_idx + 1:]
+        )
+        speech_replace_idx = uncond_ids.index(speech_replace)
+        uncond_ids = uncond_ids[:speech_replace_idx] + [speech_gen_start] + codes
+        uncond_mask = [0 if tok == self.tokenizer.pad_token_id else 1 for tok in uncond_ids]
+
+        assert len(cond_ids) == len(uncond_ids), (
+            f"CFG sequence length mismatch: conditional={len(cond_ids)}, unconditional={len(uncond_ids)}"
+        )
+
+        return cond_ids, cond_mask, uncond_ids, uncond_mask
+
+    def _infer_torch_cfg(
+        self,
+        ref_codes,
+        ref_text: str,
+        text: str,
+        language: str | None = None,
+        cfg_scale: float = 1.0,
+    ) -> str:
+        """Run classifier-free guidance inference with a manual token-by-token loop.
+
+        Uses CFG logits for top-k selection but samples from the conditional
+        distribution, following the approach in the reference multilingual script.
+
+        Args:
+            ref_codes: Reference speech token indices.
+            ref_text: Transcript of the reference audio.
+            text: Input text to synthesise.
+            language: English language name.
+            cfg_scale: CFG guidance strength.
+        Returns:
+            str: Decoded string of generated speech tokens.
+        """
+        device = self.backbone.device
+        speech_end_id = self.tokenizer.convert_tokens_to_ids("<|SPEECH_GENERATION_END|>")
+
+        norm_ref = _normalize_text(ref_text, language or "")
+        norm_text = _normalize_text(text, language or "")
+
+        cond_ids, cond_mask, uncond_ids, uncond_mask = self._build_cfg_input_ids(
+            ref_codes, norm_ref, norm_text, language=language
+        )
+
+        cond_tensor = torch.tensor(cond_ids, dtype=torch.long).unsqueeze(0).to(device)
+        uncond_tensor = torch.tensor(uncond_ids, dtype=torch.long).unsqueeze(0).to(device)
+        input_ids = torch.cat([cond_tensor, uncond_tensor], dim=0)  # (2, T)
+        attention_mask = torch.tensor(
+            [cond_mask, uncond_mask], dtype=torch.long, device=device
+        )
+
+        kv_cache = None
+        new_tokens: list[torch.Tensor] = []
+
+        with torch.no_grad():
+            for _ in range(self.max_context - input_ids.shape[1]):
+                outputs = self.backbone(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    past_key_values=kv_cache,
+                    use_cache=True,
+                    return_dict=True,
+                )
+
+                conditional_logits = outputs.logits[0, -1, :]
+                unconditional_logits = outputs.logits[1, -1, :]
+                kv_cache = outputs.past_key_values
+
+                cfg_logits = conditional_logits + cfg_scale * (
+                    conditional_logits - unconditional_logits
+                )
+
+                if len(new_tokens) < 50:
+                    cfg_logits[speech_end_id] = -float("inf")
+                    conditional_logits[speech_end_id] = -float("inf")
+
+                # top-k mask from CFG logits, sample from conditional logits
+                _, topk_idx = torch.topk(cfg_logits, 50)
+                masked_logits = torch.full_like(conditional_logits, -float("inf"))
+                masked_logits.scatter_(-1, topk_idx, conditional_logits.gather(-1, topk_idx))
+                probs = torch.softmax(masked_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1).view(-1, 1)
+                new_tokens.append(next_token)
+
+                input_ids = next_token.expand(2, -1)  # (2, 1) — same token for both sequences
+                attention_mask = torch.cat(
+                    [attention_mask, torch.ones(2, 1, dtype=attention_mask.dtype, device=device)],
+                    dim=1,
+                )
+
+                if (next_token == speech_end_id).all() or (
+                    next_token == self.tokenizer.eos_token_id
+                ).all():
+                    break
+
+        generated = torch.cat(new_tokens, dim=1)
+        return self.tokenizer.decode(
+            generated[0].cpu().numpy().tolist(), add_special_tokens=False
+        )
 
     def _infer_ggml(
         self,
