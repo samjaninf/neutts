@@ -3,6 +3,7 @@ import re
 import random
 import unicodedata
 import warnings
+import functools
 from pathlib import Path
 from typing import Generator
 
@@ -694,6 +695,7 @@ class NeuTTS:
         ref_codes = self.codec.encode_code(audio_or_path=wav_tensor).squeeze(0).squeeze(0)
         return ref_codes
 
+    @functools.lru_cache(maxsize=10)
     def encode_reference(self, ref_audio_path: str | Path) -> torch.Tensor:
         """Alias for :meth:`encode` kept for backwards compatibility."""
         return self.encode(ref_audio_path)
