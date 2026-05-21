@@ -15,28 +15,38 @@ from stream_audio import stream_generated_audio
 ASR_URL = "http://localhost:50250"
 
 WHISPER_LANG = {
-    "english": "en",
-    "french":  "fr",
-    "spanish": "es",
-    "german":  "de",
+    "english":    "en",
+    "french":     "fr",
+    "spanish":    "es",
+    "german":     "de",
+    "portuguese": "pt",
+    "japanese":   "ja",
+    "korean":     "ko",
+    "chinese":    "zh",
 }
 
 # Speaker for each language: (ref_codes_path, ref_text_path)
 SPEAKERS = {
-    "english": ("samples/jo.pt",       "samples/jo.txt"),
-    "french":  ("samples/juliette.pt", "samples/juliette.txt"),
-    "spanish": ("samples/mateo.pt",    "samples/mateo.txt"),
-    "german":  ("samples/greta.pt",    "samples/greta.txt"),
+    "english":    ("samples/english/paul.pt",       "samples/english/paul.txt"),
+    "french":     ("samples/french/amelie.pt",      "samples/french/amelie.txt"),
+    "spanish":    ("samples/spanish/martina.pt",    "samples/spanish/martina.txt"),
+    "german":     ("samples/german/carla.pt",       "samples/german/carla.txt"),
+    "portuguese": ("samples/portuguese/diogo.pt",   "samples/portuguese/diogo.txt"),
+    "japanese":   ("samples/japanese/miwa.pt",      "samples/japanese/miwa.txt"),
+    "korean":     ("samples/korean/siwoo.pt",       "samples/korean/siwoo.txt"),
+    "chinese":    ("samples/chinese/mei.pt",        "samples/chinese/mei.txt"),
 }
 
-# Key bindings: key → (src_language, tgt_language)
-MODES = {
-    "z": ("english", "french"),
-    "x": ("french",  "english"),
-    "c": ("english", "spanish"),
-    "v": ("spanish", "english"),
-    "b": ("english", "german"),
-    "n": ("german",  "english"),
+# First-letter shortcuts for source/target selection. All 8 are unique.
+LANG_KEYS = {
+    "e": "english",
+    "f": "french",
+    "s": "spanish",
+    "g": "german",
+    "p": "portuguese",
+    "j": "japanese",
+    "k": "korean",
+    "c": "chinese",
 }
 
 mic_index = sd.default.device[0]
@@ -44,11 +54,16 @@ mic_sr = int(sd.query_devices(mic_index)["default_samplerate"])
 
 # Use a Queue to pass events to the main thread safely
 event_queue = queue.Queue()
-held_keys = set()
 audio_buffer = []
 audio_lock = threading.Lock()
 recording = False
 start_delay = 0.2
+
+# Listener-thread state (read/written from the listener thread only,
+# except `_space_held` which is read from the main thread to decide
+# whether the user is still holding SPACE after the start_delay).
+_space_held = False
+_pressed_lang_keys: set[str] = set()
 
 print("Loading translation model...")
 llm_model, llm_tokenizer = load("mlx-community/LFM2.5-1.2B-Instruct-8bit")
@@ -83,72 +98,95 @@ def audio_callback(indata, frames, time_info, status):
 
 
 def on_press(key):
+    global _space_held
+    if key == keyboard.Key.space:
+        if not _space_held:
+            _space_held = True
+            event_queue.put(("SPACE_DOWN",))
+        return
     try:
         k = key.char
     except AttributeError:
         return
-    if k in MODES and k not in held_keys:
-        held_keys.add(k)
-        event_queue.put(("START", k))
+    if not k:
+        return
+    k = k.lower()
+    if k in LANG_KEYS and k not in _pressed_lang_keys:
+        _pressed_lang_keys.add(k)
+        event_queue.put(("LANG", k))
 
 
 def on_release(key):
+    global _space_held
+    if key == keyboard.Key.space:
+        _space_held = False
+        event_queue.put(("SPACE_UP",))
+        return
     try:
         k = key.char
     except AttributeError:
         return
-    if k in held_keys:
-        held_keys.discard(k)
-        event_queue.put(("STOP", k))
+    if not k:
+        return
+    _pressed_lang_keys.discard(k.lower())
 
 
 def main():
     global recording, audio_buffer
 
-    print("Multilingual translation agent")
-    for k, (src, tgt) in MODES.items():
-        print(f"  [{k}] hold → translate {src} → {tgt}")
-    print("Ctrl+C to quit.\n")
+    keyboard.Listener(on_press=on_press, on_release=on_release).start()
 
-    # Start the keyboard listener in the background
-    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-    listener.start()
-
+    pending_src: str | None = None
+    pair: tuple[str, str] | None = None
     stream = None
-    current_mode = None
 
-    # Main Thread Event Loop
     while True:
         try:
-            action, mode_key = event_queue.get()
+            event = event_queue.get()
         except KeyboardInterrupt:
             break
+        action = event[0]
 
-        if action == "START":
-            # Wait briefly to trim key-click noise
-            time.sleep(start_delay)
+        if action == "LANG":
+            letter = event[1]
+            lang = LANG_KEYS[letter]
+            if pending_src is None:
+                pending_src = lang
+                pair = None  # invalidate any previous pair
+                print(f"Source: {lang}. Now tap target.")
+            else:
+                if lang == pending_src:
+                    print(f"Target same as source ({lang}); tap a different language.")
+                    continue
+                pair = (pending_src, lang)
+                pending_src = None
+                print(f"Ready: {pair[0]} → {pair[1]}. Hold SPACE to talk.")
+            continue
 
-            # If the user released the key during the delay, abort.
-            if mode_key not in held_keys:
+        if action == "SPACE_DOWN":
+            if pair is None:
+                print("No pair selected. Tap source then target letters first.")
                 continue
-
             if stream is not None:
-                continue  # Already recording
+                continue  # already recording
 
-            current_mode = mode_key
+            # Wait briefly so the SPACE keystroke doesn't get into the recording.
+            time.sleep(start_delay)
+            if not _space_held:
+                continue  # released during delay — abort
+
             with audio_lock:
                 audio_buffer = []
                 recording = True
-
             stream = sd.InputStream(
                 samplerate=mic_sr, channels=1, callback=audio_callback, device=mic_index
             )
             stream.start()
-            src, tgt = MODES[mode_key]
-            print(f"[{mode_key}] Recording {src} → {tgt}... (release to stop)")
+            print(f"Recording {pair[0]} → {pair[1]}... (release SPACE to stop)")
+            continue
 
-        elif action == "STOP":
-            if stream is None or mode_key != current_mode:
+        if action == "SPACE_UP":
+            if stream is None or pair is None:
                 continue
 
             with audio_lock:
@@ -156,7 +194,6 @@ def main():
             stream.stop()
             stream.close()
             stream = None
-            current_mode = None
 
             with audio_lock:
                 audio_data = np.concatenate(audio_buffer, axis=0) if audio_buffer else None
@@ -165,13 +202,12 @@ def main():
                 print("Too short, ignoring.")
                 continue
 
-            # Trim trailing button-click noise
             trim = int(0.05 * mic_sr)
             if len(audio_data) > 2 * trim:
                 audio_data = audio_data[trim:-trim]
             audio_data = audio_data.squeeze()
 
-            src_lang, tgt_lang = MODES[mode_key]
+            src_lang, tgt_lang = pair
             ref_codes_path, ref_text_path = SPEAKERS[tgt_lang]
 
             print("Transcribing...")
@@ -182,8 +218,6 @@ def main():
             translation = translate(transcript, src_lang, tgt_lang)
             print(f"  [{tgt_lang}] {translation}")
 
-            # It is safe to spawn a thread for playback so the user
-            # doesn't have to wait for the audio to finish to record again.
             threading.Thread(
                 target=stream_generated_audio,
                 kwargs={

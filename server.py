@@ -16,6 +16,18 @@ from neutts import NeuTTS
 
 logging.basicConfig(level=logging.INFO)
 
+# Speaker → (ref_codes_path, ref_text_path, language). 1:1 with agent.py SPEAKERS.
+WARMUP_SPEAKERS = [
+    ("samples/english/paul.pt",       "samples/english/paul.txt",       "english"),
+    ("samples/french/amelie.pt",      "samples/french/amelie.txt",      "french"),
+    ("samples/spanish/martina.pt",    "samples/spanish/martina.txt",    "spanish"),
+    ("samples/german/carla.pt",       "samples/german/carla.txt",       "german"),
+    ("samples/portuguese/diogo.pt",   "samples/portuguese/diogo.txt",   "portuguese"),
+    ("samples/japanese/miwa.pt",      "samples/japanese/miwa.txt",      "japanese"),
+    ("samples/korean/siwoo.pt",       "samples/korean/siwoo.txt",       "korean"),
+    ("samples/chinese/mei.pt",        "samples/chinese/mei.txt",        "chinese"),
+]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -45,6 +57,18 @@ async def lifespan(app: FastAPI):
         codec_device="cpu",
     )
     logging.info("Model loaded.")
+
+    # Warmup: triggers Metal pipeline compilation + populates ref-codes cache.
+    for codes_path, text_path, lang in WARMUP_SPEAKERS:
+        if not Path(codes_path).exists() or not Path(text_path).exists():
+            logging.warning("Warmup skipped for %s (missing files)", lang)
+            continue
+        logging.info("Warming up %s...", lang)
+        ref_codes = _load_ref_codes(str(Path(codes_path).resolve()))
+        ref_text = Path(text_path).read_text().strip()
+        for _ in app.state.tts.infer_stream(".", ref_codes, ref_text, language=lang):
+            pass
+    logging.info("Warmup complete.")
     yield
 
 
