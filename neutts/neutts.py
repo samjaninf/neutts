@@ -1,6 +1,7 @@
 import os
 import re
-import random
+import subprocess
+import sys
 import unicodedata
 import warnings
 from pathlib import Path
@@ -66,6 +67,27 @@ _QUOTE_MAP = str.maketrans(
         "\u201d": '"',
     }
 )
+
+def _detect_cpu_cores() -> tuple[int, int]:
+    """Return ``(n_perf_cores, n_all_cores)``.
+
+    On macOS, performance-core count is read from ``sysctl
+    hw.perflevel0.physicalcpu`` so generation threads skip efficiency cores.
+    Other platforms fall back to ``sched_getaffinity`` / ``cpu_count``.
+    """
+    n_all = os.cpu_count() or 4
+    if sys.platform == "darwin":
+        try:
+            n_perf = int(subprocess.check_output(
+                ["sysctl", "-n", "hw.perflevel0.physicalcpu"], text=True
+            ).strip())
+            return n_perf, n_all
+        except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
+            pass
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0)), n_all
+    return n_all, n_all
+
 
 # Lazily-initialised CJK frontends — shared across all NeuTTS instances.
 _FRONTENDS: dict = {}
@@ -310,35 +332,30 @@ class NeuTTS:
                     "    pip install llama-cpp-python"
                 ) from e
 
-            seed = random.randint(0, 2**32)
-            print(f"Using seed {seed}")
+            self._seed = 1337
 
             _use_gpu = backbone_device.lower() in ("gpu", "metal", "mps", "cuda")
             _use_flash_attn = backbone_device.lower() in ("gpu", "cuda")
+            _n_batch = min(512, self.max_context)
+            _n_perf_cores, _n_all_cores = _detect_cpu_cores()
+            gguf_kwargs = dict(
+                verbose=False,
+                n_gpu_layers=-1 if _use_gpu else 0,
+                n_ctx=self.max_context,
+                n_batch=_n_batch,
+                n_ubatch=_n_batch,
+                n_threads=_n_perf_cores,
+                n_threads_batch=_n_all_cores,
+                use_mlock=True,
+                flash_attn=_use_flash_attn,
+                op_offload=True if _use_gpu else None,
+                seed=self._seed,
+            )
             if os.path.isfile(backbone_repo):
-                self.backbone = Llama(
-                    model_path=backbone_repo,
-                    verbose=False,
-                    n_gpu_layers=-1 if _use_gpu else 0,
-                    n_ctx=self.max_context,
-                    n_batch=self.max_context,
-                    n_ubatch=self.max_context,
-                    mlock=True,
-                    flash_attn=_use_flash_attn,
-                    seed=seed,
-                )
+                self.backbone = Llama(model_path=backbone_repo, **gguf_kwargs)
             else:
                 self.backbone = Llama.from_pretrained(
-                    repo_id=backbone_repo,
-                    filename=backbone_filename,
-                    verbose=False,
-                    n_gpu_layers=-1 if _use_gpu else 0,
-                    n_ctx=self.max_context,
-                    n_batch=self.max_context,
-                    n_ubatch=self.max_context,
-                    mlock=True,
-                    flash_attn=_use_flash_attn,
-                    seed=seed,
+                    repo_id=backbone_repo, filename=backbone_filename, **gguf_kwargs
                 )
 
             self._is_quantized_model = True
@@ -409,6 +426,7 @@ class NeuTTS:
 
             self.codec = NeuCodecOnnxDecoder(codec_repo)
             self._is_onnx_codec = True
+            return
 
         match codec_repo:
             case "neuphonic/neucodec":
@@ -819,6 +837,7 @@ class NeuTTS:
         Returns:
             str: Raw model output containing generated speech tokens.
         """
+        self.backbone.reset()
         codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
 
         if self.input_format == "phonemes":
@@ -840,6 +859,7 @@ class NeuTTS:
             temperature=1.0,
             top_k=50,
             stop=["<|SPEECH_GENERATION_END|>"],
+            seed=self._seed,
         )
         return output["choices"][0]["text"]
 
@@ -905,6 +925,7 @@ class NeuTTS:
         Yields:
             np.ndarray: 1-D float32 audio chunks at ``self.sample_rate`` Hz.
         """
+        self.backbone.reset()
         codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
 
         if self.input_format == "phonemes":
@@ -927,6 +948,7 @@ class NeuTTS:
             top_k=50,
             stop=["<|SPEECH_GENERATION_END|>"],
             stream=True,
+            seed=self._seed,
         )
 
         audio_cache: list[np.ndarray] = []
