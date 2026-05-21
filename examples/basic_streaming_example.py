@@ -47,27 +47,20 @@ def audio_player_thread(audio_queue, stream, prefill_chunks=0):
         audio_queue.task_done()
 
 
-def main(input_text, ref_codes_path, ref_text, backbone):
+def main(input_text, ref_codes_path, ref_text, backbone, language=None, device="cpu", backbone_filename="*.gguf"):
 
-    assert backbone in [
-        "neuphonic/neutts-air-q4-gguf",
-        "neuphonic/neutts-air-q8-gguf",
-        "neuphonic/neutts-nano-q4-gguf",
-        "neuphonic/neutts-nano-q8-gguf",
-        "neuphonic/neutts-nano-french-q4-gguf",
-        "neuphonic/neutts-nano-french-q8-gguf",
-        "neuphonic/neutts-nano-spanish-q4-gguf",
-        "neuphonic/neutts-nano-spanish-q8-gguf",
-        "neuphonic/neutts-nano-german-q4-gguf",
-        "neuphonic/neutts-nano-german-q8-gguf",
-    ], "Must be a GGUF ckpt as streaming is only currently supported by llama-cpp."
+    assert backbone.lower().endswith("gguf") or "gguf" in backbone.lower(), \
+        "Must be a GGUF ckpt as streaming is only currently supported by llama-cpp."
 
-    # Initialize NeuTTS with the desired model and codec
+    # Initialize NeuTTS with the desired model and codec.
+    # Codec stays on CPU with the ONNX decoder regardless of backbone device —
+    # it's the fastest option for chunk-by-chunk decode.
     tts = NeuTTS(
         backbone_repo=backbone,
-        backbone_device="cpu",
+        backbone_device=device,
         codec_repo="neuphonic/neucodec-onnx-decoder",
         codec_device="cpu",
+        backbone_filename=backbone_filename,
     )
 
     input_text = _read_if_path(input_text)
@@ -96,7 +89,7 @@ def main(input_text, ref_codes_path, ref_text, backbone):
     print("Streaming...")
     print("-" * 80)
 
-    for chunk in tts.infer_stream(input_text, ref_codes, ref_text):
+    for chunk in tts.infer_stream(input_text, ref_codes, ref_text, language=language):
         chunk_count += 1
         now = time.perf_counter()
         gen_duration = now - last_yield_time
@@ -186,10 +179,31 @@ if __name__ == "__main__":
         default="neuphonic/neutts-nano-q8-gguf",
         help="Huggingface repo containing the backbone checkpoint. Must be GGUF.",
     )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        help="Language for multilingual models (e.g. english, spanish, french, german, japanese, korean, chinese, portuguese, urdu)",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Device for the GGUF backbone: cpu, metal, mps, or gpu (metal/mps/gpu all enable Metal on Apple Silicon)",
+    )
+    parser.add_argument(
+        "--backbone_filename",
+        type=str,
+        default="*.gguf",
+        help="Filename or glob to select a specific GGUF file from the repo (e.g. '*Q4_0.gguf')",
+    )
     args = parser.parse_args()
     main(
         input_text=args.input_text,
         ref_codes_path=args.ref_codes,
         ref_text=args.ref_text,
         backbone=args.backbone,
+        language=args.language,
+        device=args.device,
+        backbone_filename=args.backbone_filename,
     )

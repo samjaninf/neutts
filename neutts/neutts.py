@@ -159,6 +159,7 @@ class NeuTTS:
         codec_repo="neuphonic/neucodec",
         codec_device="cpu",
         language=None,
+        backbone_filename="*.gguf",
     ):
         """Initialise NeuTTS by loading the backbone, codec, phonemizer, and watermarker.
 
@@ -200,7 +201,7 @@ class NeuTTS:
             False  # set by _load_backbone for multilingual torch models
         )
 
-        self._load_backbone(backbone_repo, backbone_device)
+        self._load_backbone(backbone_repo, backbone_device, backbone_filename)
 
         if self.input_format == "phonemes":
             print("Loading phonemizer...")
@@ -227,6 +228,32 @@ class NeuTTS:
             )
             self.watermarker = None
 
+    @staticmethod
+    def _read_gguf_array_meta(model_path: str) -> dict:
+        """Read ARRAY-type metadata fields from a GGUF file using the gguf package.
+
+        llama-cpp-python's ``metadata`` dict silently drops array fields; this
+        method recovers them. Returns an empty dict if ``gguf`` is not installed.
+
+        Args:
+            model_path: Local path to the ``.gguf`` file.
+        Returns:
+            dict: Mapping of field name to decoded list value for all ARRAY fields.
+        """
+        try:
+            from gguf import GGUFReader, GGUFValueType
+        except ImportError:
+            return {}
+        result = {}
+        reader = GGUFReader(model_path, "r")
+        for name, field in reader.fields.items():
+            if field.types and field.types[0] == GGUFValueType.ARRAY:
+                try:
+                    result[name] = field.contents()
+                except Exception:
+                    pass
+        return result
+
     def _load_phonemizer(self, language: str | None, backbone_repo: str) -> None:
         """Load the phonemizer for the given language.
 
@@ -250,7 +277,7 @@ class NeuTTS:
         else:
             self.phonemizer = BasePhonemizer(language_code=language)
 
-    def _load_backbone(self, backbone_repo: str, backbone_device: str) -> None:
+    def _load_backbone(self, backbone_repo: str, backbone_device: str, backbone_filename: str = "*.gguf") -> None:
         """Load the LLM backbone — either a GGUF model or a HuggingFace model.
 
         GGUF models (repo ID / path ending in ``gguf``) are loaded via
@@ -272,7 +299,7 @@ class NeuTTS:
         """
         print(f"Loading backbone from: {backbone_repo} on {backbone_device} ...")
 
-        if backbone_repo.endswith("gguf"):
+        if backbone_repo.lower().endswith("gguf"):
 
             try:
                 from llama_cpp import Llama
@@ -286,31 +313,48 @@ class NeuTTS:
             seed = random.randint(0, 2**32)
             print(f"Using seed {seed}")
 
+            _use_gpu = backbone_device.lower() in ("gpu", "metal", "mps", "cuda")
+            _use_flash_attn = backbone_device.lower() in ("gpu", "cuda")
             if os.path.isfile(backbone_repo):
                 self.backbone = Llama(
                     model_path=backbone_repo,
                     verbose=False,
-                    n_gpu_layers=-1 if backbone_device == "gpu" else 0,
+                    n_gpu_layers=-1 if _use_gpu else 0,
                     n_ctx=self.max_context,
+                    n_batch=self.max_context,
+                    n_ubatch=self.max_context,
                     mlock=True,
-                    flash_attn=True if backbone_device == "gpu" else False,
+                    flash_attn=_use_flash_attn,
                     seed=seed,
                 )
             else:
                 self.backbone = Llama.from_pretrained(
                     repo_id=backbone_repo,
-                    filename="*.gguf",
+                    filename=backbone_filename,
                     verbose=False,
-                    n_gpu_layers=-1 if backbone_device == "gpu" else 0,
+                    n_gpu_layers=-1 if _use_gpu else 0,
                     n_ctx=self.max_context,
+                    n_batch=self.max_context,
+                    n_ubatch=self.max_context,
                     mlock=True,
-                    flash_attn=True if backbone_device == "gpu" else False,
+                    flash_attn=_use_flash_attn,
                     seed=seed,
                 )
 
             self._is_quantized_model = True
             self._setup_ggml_template()
-            self.input_format = self.backbone.metadata.get("neuphonic.input_format", "phonemes")
+            # llama-cpp metadata dict silently drops ARRAY-type fields; use GGUFReader
+            # to recover them. Falls back gracefully if gguf package is not installed.
+            gguf_array_meta = self._read_gguf_array_meta(self.backbone.model_path)
+            input_format = self.backbone.metadata.get("neuphonic.input_format")
+            if input_format is None:
+                # Older GGUFs lack the key — infer from chat template
+                chat_template = self.backbone.metadata.get("tokenizer.chat_template", "")
+                input_format = "phonemes" if "Convert the text to speech" in chat_template else "text"
+            self.input_format = input_format
+            self._use_lang_token = self.backbone.metadata.get("neuphonic.use_lang_token", False)
+            if "neuphonic.supported_langs" in gguf_array_meta:
+                self._supported_langs = gguf_array_meta["neuphonic.supported_langs"]
 
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(backbone_repo)
@@ -437,23 +481,30 @@ class NeuTTS:
         )
         self._ggml_template = env.from_string(template_str)
 
-    def _format_ggml_prompt(self, user_content: str, assistant_prefix: str) -> str:
+    def _format_ggml_prompt(
+        self, user_content: str, assistant_prefix: str, system_content: str | None = None
+    ) -> str:
         """Build a raw completion prompt for GGML inference.
 
-        Renders the chat template with only the user message and
-        ``add_generation_prompt=True``, then appends the assistant prefix
-        directly. This leaves the prompt mid-assistant-turn so that raw
+        Renders the chat template with the user message (and optional system
+        message) and ``add_generation_prompt=True``, then appends the assistant
+        prefix directly. This leaves the prompt mid-assistant-turn so that raw
         completion continues from the prefix rather than starting a new turn.
 
         Args:
             user_content: The user message content (may include special tokens).
             assistant_prefix: Text to place at the start of the assistant turn
                               (e.g. the reference speech codes).
+            system_content: Optional system message (e.g. a lang token like ``<|ES|>``).
         Returns:
             str: Formatted prompt ready to pass to the GGML backbone.
         """
+        messages = []
+        if system_content is not None:
+            messages.append({"role": "system", "content": system_content})
+        messages.append({"role": "user", "content": user_content})
         user_prompt = self._ggml_template.render(
-            messages=[{"role": "user", "content": user_content}],
+            messages=messages,
             bos_token=self._ggml_bos_token,
             eos_token=self._ggml_eos_token,
             add_generation_prompt=True,
@@ -655,15 +706,8 @@ class NeuTTS:
             ValueError: If ``language`` is provided (not yet supported for streaming).
             NotImplementedError: If called with a torch (non-GGUF) backbone.
         """
-        # TODO: add multilingual support for GGML streaming inference
-        if language is not None:
-            raise ValueError(
-                "Multilingual streaming inference is not yet supported. "
-                "Use `infer` for multilingual synthesis."
-            )
-
         if self._is_quantized_model:
-            return self._infer_stream_ggml(ref_codes, ref_text, text)
+            return self._infer_stream_ggml(ref_codes, ref_text, text, language=language)
 
         raise NotImplementedError("Streaming is not implemented for the torch backend!")
 
@@ -770,28 +814,25 @@ class NeuTTS:
             ref_codes: Reference speech token indices.
             ref_text: Transcript of the reference audio.
             input_text: Input text to synthesise.
-            language: Not yet supported for GGML inference.
+            language: English language name (e.g. ``"spanish"``). Used to inject
+                      the lang token as a system message for multilingual text-input models.
         Returns:
             str: Raw model output containing generated speech tokens.
-        Raises:
-            ValueError: If ``language`` is provided (GGML multilingual not yet supported).
         """
-        # TODO: add multilingual support for GGML inference
-        if language is not None:
-            raise ValueError(
-                "Multilingual GGML inference is not yet supported. "
-                "Use a torch backbone for multilingual synthesis."
-            )
-
         codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
 
         if self.input_format == "phonemes":
             ref_text = self._to_phones(ref_text)
             input_text = self._to_phones(input_text)
+        else:
+            ref_text = _normalize_text(ref_text, language or "")
+            input_text = _normalize_text(input_text, language or "")
 
+        system_content = LANG_INFO[language]["token"] if self._use_lang_token and language else None
         prompt = self._format_ggml_prompt(
             user_content=f"{ref_text} {input_text}",
             assistant_prefix=f"{codes_str}",
+            system_content=system_content,
         )
         output = self.backbone(
             prompt,
@@ -846,7 +887,7 @@ class NeuTTS:
         return out / sum_weight
 
     def _infer_stream_ggml(
-        self, ref_codes: torch.Tensor, ref_text: str, input_text: str
+        self, ref_codes: torch.Tensor, ref_text: str, input_text: str, language: str | None = None
     ) -> Generator[np.ndarray, None, None]:
         """Stream speech generation through the GGML backbone, yielding decoded audio chunks.
 
@@ -859,6 +900,8 @@ class NeuTTS:
             ref_codes: Reference speech token indices.
             ref_text: Transcript of the reference audio.
             input_text: Input text to synthesise.
+            language: English language name (e.g. ``"spanish"``). Used to inject
+                      the lang token as a system message for multilingual text-input models.
         Yields:
             np.ndarray: 1-D float32 audio chunks at ``self.sample_rate`` Hz.
         """
@@ -867,10 +910,15 @@ class NeuTTS:
         if self.input_format == "phonemes":
             ref_text = self._to_phones(ref_text)
             input_text = self._to_phones(input_text)
+        else:
+            ref_text = _normalize_text(ref_text, language or "")
+            input_text = _normalize_text(input_text, language or "")
 
+        system_content = LANG_INFO[language]["token"] if self._use_lang_token and language else None
         prompt = self._format_ggml_prompt(
             user_content=f"{ref_text} {input_text}",
             assistant_prefix=f"{codes_str}",
+            system_content=system_content,
         )
         stream = self.backbone(
             prompt,

@@ -24,7 +24,7 @@ dependencies = [
 
 # Defining optional installations
 [project.optional-dependencies]
-llama = ["llama-cpp-python", "jinja2>=3.1.0"]
+llama = ["llama-cpp-python", "jinja2>=3.1.0", "gguf"]
 onnx = ["onnxruntime"]
 all = ["llama-cpp-python", "onnxruntime"]
 
