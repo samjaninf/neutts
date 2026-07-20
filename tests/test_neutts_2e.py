@@ -1,4 +1,5 @@
 from importlib import import_module
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -61,11 +62,16 @@ def test_bpe_prompt_unknown_emotion_raises(bpe_model):
         bpe_model._apply_chat_template(REF_CODES, REF_TEXT, GEN_TEXT, emotion="ecstatic")
 
 
-def test_ggml_prompt_matches_torch_prompt(bpe_model):
-    decoded_torch = bpe_model.tokenizer.decode(
-        bpe_model._apply_chat_template(REF_CODES, REF_TEXT, GEN_TEXT)
+@pytest.mark.parametrize("emotion", [None, "happy"])
+def test_ggml_prompt_matches_torch_prompt(bpe_model, emotion):
+    tokenizer = bpe_model.tokenizer
+    bpe_model.backbone = SimpleNamespace(
+        tokenize=lambda b, add_bos, special: tokenizer.encode(b.decode(), add_special_tokens=False)
     )
-    assert bpe_model._ggml_prompt(REF_CODES, REF_TEXT, GEN_TEXT) == decoded_torch
+    torch_ids = bpe_model._apply_chat_template(REF_CODES, REF_TEXT, GEN_TEXT, emotion=emotion)
+    ggml_prompt = bpe_model._ggml_prompt(REF_CODES, REF_TEXT, GEN_TEXT, emotion=emotion)
+    assert tokenizer.encode(ggml_prompt) == torch_ids
+    assert tokenizer.decode(torch_ids) == ggml_prompt
 
 
 def test_phoneme_model_rejects_emotion():

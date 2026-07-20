@@ -216,9 +216,9 @@ class NeuTTS:
 
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(backbone_repo)
-            self.backbone = AutoModelForCausalLM.from_pretrained(backbone_repo).to(
-                torch.device(backbone_device)
-            )
+            self.backbone = AutoModelForCausalLM.from_pretrained(
+                backbone_repo, dtype=torch.bfloat16
+            ).to(torch.device(backbone_device))
             neuphonic_cfg = getattr(self.backbone.config, "neuphonic", None) or {}
             self.input_format = neuphonic_cfg.get("input_format", "phonemes")
 
