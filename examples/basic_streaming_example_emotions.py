@@ -4,10 +4,15 @@ import pyaudio
 import queue
 import threading
 
-from basic_streaming_example import audio_player_thread
+try:
+    from .basic_streaming_example import audio_player_thread
+except ImportError:
+    from basic_streaming_example import audio_player_thread
 
 
-def main(input_text, speaker, emotion, backbone, device, seed):
+def main(
+    input_text, speaker, emotion, backbone, device, codec, codec_device, seed, temperature, top_k
+):
     assert backbone.endswith(
         "gguf"
     ), "Must be a GGUF ckpt as streaming is only currently supported by llama-cpp."
@@ -15,7 +20,8 @@ def main(input_text, speaker, emotion, backbone, device, seed):
     tts = NeuTTS2E(
         backbone_repo=backbone,
         backbone_device=device,
-        codec_repo="neuphonic/neucodec-onnx-decoder",
+        codec_repo=codec,
+        codec_device=codec_device,
         seed=seed,
     )
 
@@ -27,7 +33,9 @@ def main(input_text, speaker, emotion, backbone, device, seed):
     player = threading.Thread(target=audio_player_thread, args=(audio_queue, stream))
     player.start()
 
-    for chunk in tts.infer_stream(input_text, speaker=speaker, emotion=emotion):
+    for chunk in tts.infer_stream(
+        input_text, speaker=speaker, emotion=emotion, temperature=temperature, top_k=top_k
+    ):
         audio = (chunk * 32767).astype(np.int16)
         audio_queue.put(audio.tobytes())
 
@@ -76,10 +84,34 @@ if __name__ == "__main__":
         help="Device for the backbone, e.g. cpu or gpu",
     )
     parser.add_argument(
+        "--codec",
+        type=str,
+        default="neuphonic/neucodec-onnx-decoder",
+        help="Huggingface repo containing the codec checkpoint",
+    )
+    parser.add_argument(
+        "--codec_device",
+        type=str,
+        default="cpu",
+        help="Device for the codec, e.g. cpu, mps or cuda (onnx codecs are cpu only)",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
         help="Optional seed for reproducible generation",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature",
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=50,
+        help="Top-K sampling cutoff",
     )
     args = parser.parse_args()
     main(
@@ -88,5 +120,9 @@ if __name__ == "__main__":
         emotion=args.emotion,
         backbone=args.backbone,
         device=args.device,
+        codec=args.codec,
+        codec_device=args.codec_device,
         seed=args.seed,
+        temperature=args.temperature,
+        top_k=args.top_k,
     )

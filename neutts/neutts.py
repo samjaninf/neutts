@@ -166,7 +166,7 @@ class NeuTTS:
                 )
 
         if language in CUSTOM_PHONEMIZERS:
-            self.phonemizer = CUSTOM_PHONEMIZERS[language]
+            self.phonemizer = CUSTOM_PHONEMIZERS[language]()
         else:
             self.phonemizer = BasePhonemizer(language_code=language)
 
