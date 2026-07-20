@@ -56,6 +56,33 @@ def _n_perf_cores() -> int:
     return max((os.cpu_count() or 2) // 2, 1)
 
 
+def _load_watermarker():
+    try:
+        try:
+            import pkg_resources  # noqa: F401
+        except ModuleNotFoundError:
+            # resemble-perth 1.0.1 needs pkg_resources, removed from recent setuptools
+            import importlib.resources
+            import types
+
+            shim = types.ModuleType("pkg_resources")
+            shim.resource_filename = lambda package, resource: str(
+                importlib.resources.files(package) / resource
+            )
+            sys.modules["pkg_resources"] = shim
+
+        import perth
+
+        return perth.PerthImplicitWatermarker()
+    except (ImportError, AttributeError, TypeError) as e:
+        warnings.warn(
+            f"Perth watermarking unavailable: {e}. "
+            "Audio will not be watermarked. "
+            "Install with: pip install resemble-perth"
+        )
+        return None
+
+
 def _linear_overlap_add(frames: list[np.ndarray], stride: int, power: float = 1.0) -> np.ndarray:
     # original impl --> https://github.com/facebookresearch/encodec/blob/main/encodec/utils.py
     assert len(frames)
@@ -126,17 +153,7 @@ class NeuTTS:
         self._load_codec(codec_repo, codec_device)
 
         # Load watermarker (optional)
-        try:
-            import perth
-
-            self.watermarker = perth.PerthImplicitWatermarker()
-        except (ImportError, AttributeError, TypeError) as e:
-            warnings.warn(
-                f"Perth watermarking unavailable: {e}. "
-                "Audio will not be watermarked. "
-                "Install with: pip install perth>=0.2.0"
-            )
-            self.watermarker = None
+        self.watermarker = _load_watermarker()
 
     def _load_phonemizer(self, language, backbone_repo):
         if not language:
