@@ -202,6 +202,30 @@ python -m examples.basic_streaming_example \
 
 Again, a particular model repo can be specified with the `--backbone` argument - note that for streaming the model must be in GGUF format.
 
+### Emotional TTS (NeuTTS-2E)
+
+NeuTTS-2E is a fixed-speaker emotional English model. Pre-encoded references for its four speakers (`emily`, `paul`, `sophie`, `steven`) live in `samples/` in the same format as every other reference, so no reference audio is needed — and they work as ordinary cloning references for the other models too. Supported emotions are `angry`, `disgusted`, `fearful`, `happy`, `neutral`, `sad` and `surprised`.
+
+```python
+from neutts import NeuTTS2E
+import soundfile as sf
+
+tts = NeuTTS2E()
+wav = tts.infer("I can't believe it's finally here!", speaker="emily", emotion="happy")
+sf.write("test.wav", wav, 24000)
+```
+
+Or from the command line:
+
+```bash
+python -m examples.basic_example_emotions \
+  --input_text "I can't believe it's finally here!" \
+  --speaker emily \
+  --emotion happy
+```
+
+Streaming works the same way via `examples.basic_streaming_example_emotions` with a GGUF `--backbone`. Pass `seed` to `NeuTTS2E` (or `--seed` to the examples) for reproducible generation.
+
 ## Preparing References for Cloning
 
 NeuTTS requires two inputs:

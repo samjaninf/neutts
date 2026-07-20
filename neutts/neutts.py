@@ -1,5 +1,8 @@
 import os
 import random
+import subprocess
+import sys
+import unicodedata
 from typing import Generator
 from pathlib import Path
 import librosa
@@ -10,7 +13,6 @@ import warnings
 from neucodec import NeuCodec, DistillNeuCodec
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from .phonemizers import BasePhonemizer, CUSTOM_PHONEMIZERS
-
 
 BACKBONE_LANGUAGE_MAP = {
     # en models
@@ -35,9 +37,26 @@ BACKBONE_LANGUAGE_MAP = {
 }
 
 
-def _linear_overlap_add(
-    frames: list[np.ndarray], stride: int, power: float = 1.0
-) -> np.ndarray:
+_QUOTE_MAP = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
+
+
+def _normalize_text(text: str) -> str:
+    return unicodedata.normalize("NFKC", text.translate(_QUOTE_MAP))
+
+
+def _n_perf_cores() -> int:
+    # On Apple silicon, keep generation threads off the efficiency cores.
+    if sys.platform == "darwin":
+        try:
+            return int(
+                subprocess.check_output(["sysctl", "-n", "hw.perflevel0.physicalcpu"], text=True)
+            )
+        except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
+            pass
+    return max((os.cpu_count() or 2) // 2, 1)
+
+
+def _linear_overlap_add(frames: list[np.ndarray], stride: int, power: float = 1.0) -> np.ndarray:
     # original impl --> https://github.com/facebookresearch/encodec/blob/main/encodec/utils.py
     assert len(frames)
     dtype = frames[0].dtype
@@ -76,6 +95,7 @@ class NeuTTS:
         codec_repo="neuphonic/neucodec",
         codec_device="cpu",
         language=None,
+        seed=None,
     ):
 
         # Consts
@@ -95,11 +115,13 @@ class NeuTTS:
         # HF tokenizer
         self.tokenizer = None
 
-        # Load phonemizer + models
-        print("Loading phonemizer...")
-        self._load_phonemizer(language, backbone_repo)
+        self._seed = seed
 
         self._load_backbone(backbone_repo, backbone_device)
+
+        if self.input_format == "phonemes":
+            print("Loading phonemizer...")
+            self._load_phonemizer(language, backbone_repo)
 
         self._load_codec(codec_repo, codec_device)
 
@@ -145,38 +167,43 @@ class NeuTTS:
                     "    pip install llama-cpp-python"
                 ) from e
 
-            seed = random.randint(0, 2**32)
+            seed = self._seed if self._seed is not None else random.randint(0, 2**32)
             print(f"Using seed {seed}")
 
+            use_gpu = backbone_device.lower() in ("gpu", "metal", "mps", "cuda")
+            gguf_kwargs = dict(
+                verbose=False,
+                n_gpu_layers=-1 if use_gpu else 0,
+                n_ctx=self.max_context,
+                n_batch=512,
+                n_ubatch=512,
+                n_threads=_n_perf_cores(),
+                n_threads_batch=os.cpu_count(),
+                use_mlock=True,
+                flash_attn=use_gpu,
+                seed=seed,
+            )
             if os.path.isfile(backbone_repo):
-                self.backbone = Llama(
-                    model_path=backbone_repo,
-                    verbose=False,
-                    n_gpu_layers=-1 if backbone_device == "gpu" else 0,
-                    n_ctx=self.max_context,
-                    mlock=True,
-                    flash_attn=True if backbone_device == "gpu" else False,
-                    seed=seed,
-                )
+                self.backbone = Llama(model_path=backbone_repo, **gguf_kwargs)
             else:
                 self.backbone = Llama.from_pretrained(
-                    repo_id=backbone_repo,
-                    filename="*.gguf",
-                    verbose=False,
-                    n_gpu_layers=-1 if backbone_device == "gpu" else 0,
-                    n_ctx=self.max_context,
-                    mlock=True,
-                    flash_attn=True if backbone_device == "gpu" else False,
-                    seed=seed,
+                    repo_id=backbone_repo, filename="*.gguf", **gguf_kwargs
                 )
 
             self._is_quantized_model = True
+            self.input_format = self.backbone.metadata.get("neuphonic.input_format")
+            if self.input_format is None:
+                template = self.backbone.metadata.get("tokenizer.chat_template", "")
+                is_bpe = template and "Convert the text to speech" not in template
+                self.input_format = "BPE" if is_bpe else "phonemes"
 
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(backbone_repo)
             self.backbone = AutoModelForCausalLM.from_pretrained(backbone_repo).to(
                 torch.device(backbone_device)
             )
+            neuphonic_cfg = getattr(self.backbone.config, "neuphonic", None) or {}
+            self.input_format = neuphonic_cfg.get("input_format", "phonemes")
 
     def _load_codec(self, codec_repo, codec_device):
 
@@ -224,7 +251,15 @@ class NeuTTS:
                     " 'neuphonic/neucodec-onnx-decoder'."
                 )
 
-    def infer(self, text: str, ref_codes: np.ndarray | torch.Tensor, ref_text: str) -> np.ndarray:
+    def infer(
+        self,
+        text: str,
+        ref_codes: np.ndarray | torch.Tensor,
+        ref_text: str,
+        emotion: str | None = None,
+        temperature: float = 1.0,
+        top_k: int = 50,
+    ) -> np.ndarray:
         """
         Perform inference to generate speech from text using the TTS model and reference audio.
 
@@ -232,16 +267,22 @@ class NeuTTS:
             text (str): Input text to be converted to speech.
             ref_codes (np.ndarray | torch.tensor): Encoded reference.
             ref_text (str): Reference text for reference audio. Defaults to None.
+            emotion (str | None): Emotion tag, e.g. "happy". BPE models only.
+            temperature (float): Sampling temperature.
+            top_k (int): Top-K sampling cutoff.
         Returns:
             np.ndarray: Generated speech waveform.
         """
+        emotion = self._check_emotion(emotion)
 
         # Generate tokens
         if self._is_quantized_model:
-            output_str = self._infer_ggml(ref_codes, ref_text, text)
+            output_str = self._infer_ggml(ref_codes, ref_text, text, emotion, temperature, top_k)
         else:
-            prompt_ids = self._apply_chat_template(ref_codes, ref_text, text)
-            output_str = self._infer_torch(prompt_ids)
+            if self._seed is not None:
+                torch.manual_seed(self._seed)
+            prompt_ids = self._apply_chat_template(ref_codes, ref_text, text, emotion)
+            output_str = self._infer_torch(prompt_ids, temperature, top_k)
 
         # Decode
         wav = self._decode(output_str)
@@ -254,7 +295,13 @@ class NeuTTS:
         return watermarked_wav
 
     def infer_stream(
-        self, text: str, ref_codes: np.ndarray | torch.Tensor, ref_text: str
+        self,
+        text: str,
+        ref_codes: np.ndarray | torch.Tensor,
+        ref_text: str,
+        emotion: str | None = None,
+        temperature: float = 1.0,
+        top_k: int = 50,
     ) -> Generator[np.ndarray, None, None]:
         """
         Perform streaming inference to generate speech from
@@ -264,15 +311,26 @@ class NeuTTS:
             text (str): Input text to be converted to speech.
             ref_codes (np.ndarray | torch.tensor): Encoded reference.
             ref_text (str): Reference text for reference audio. Defaults to None.
+            emotion (str | None): Emotion tag, e.g. "happy". BPE models only.
+            temperature (float): Sampling temperature.
+            top_k (int): Top-K sampling cutoff.
         Yields:
             np.ndarray: Generated speech waveform.
         """
+        emotion = self._check_emotion(emotion)
 
         if self._is_quantized_model:
-            return self._infer_stream_ggml(ref_codes, ref_text, text)
+            return self._infer_stream_ggml(ref_codes, ref_text, text, emotion, temperature, top_k)
 
         else:
             raise NotImplementedError("Streaming is not implemented for the torch backend!")
+
+    def _check_emotion(self, emotion: str | None) -> str | None:
+        if emotion == "neutral":
+            emotion = None
+        if emotion is not None and self.input_format == "phonemes":
+            raise ValueError("Emotion is only supported by BPE models.")
+        return emotion
 
     def encode_reference(self, ref_audio_path: str | Path):
         wav, _ = librosa.load(ref_audio_path, sr=16000, mono=True)
@@ -312,18 +370,40 @@ class NeuTTS:
         return phones
 
     def _apply_chat_template(
-        self, ref_codes: list[int], ref_text: str, input_text: str
+        self, ref_codes: list[int], ref_text: str, input_text: str, emotion: str | None = None
     ) -> list[int]:
 
-        input_text = self._to_phones(ref_text) + " " + self._to_phones(input_text)
         speech_replace = self.tokenizer.convert_tokens_to_ids("<|SPEECH_REPLACE|>")
         speech_gen_start = self.tokenizer.convert_tokens_to_ids("<|SPEECH_GENERATION_START|>")
         text_replace = self.tokenizer.convert_tokens_to_ids("<|TEXT_REPLACE|>")
         text_prompt_start = self.tokenizer.convert_tokens_to_ids("<|TEXT_PROMPT_START|>")
         text_prompt_end = self.tokenizer.convert_tokens_to_ids("<|TEXT_PROMPT_END|>")
 
-        input_ids = self.tokenizer.encode(input_text, add_special_tokens=False)
-        chat = """user: Convert the text to speech:<|TEXT_REPLACE|>\nassistant:<|SPEECH_REPLACE|>"""
+        if self.input_format == "phonemes":
+            input_text = self._to_phones(ref_text) + " " + self._to_phones(input_text)
+            input_ids = self.tokenizer.encode(input_text, add_special_tokens=False)
+            chat = (
+                "user: Convert the text to speech:<|TEXT_REPLACE|>\n" "assistant:<|SPEECH_REPLACE|>"
+            )
+        else:
+            ref_text = _normalize_text(ref_text)
+            input_text = _normalize_text(input_text)
+            if emotion is None:
+                # Encode the concatenation in one pass so BPE resolves the boundary cleanly.
+                input_ids = self.tokenizer.encode(
+                    f"{ref_text} {input_text}", add_special_tokens=False
+                )
+            else:
+                emotion_token = f"<|{emotion.upper()}|>"
+                emotion_id = self.tokenizer.convert_tokens_to_ids(emotion_token)
+                if emotion_id == self.tokenizer.unk_token_id:
+                    raise ValueError(f"Emotion token {emotion_token} is not in the model vocab.")
+                input_ids = (
+                    self.tokenizer.encode(ref_text, add_special_tokens=False)
+                    + [emotion_id]
+                    + self.tokenizer.encode(input_text, add_special_tokens=False)
+                )
+            chat = """<|TEXT_REPLACE|><|SPEECH_REPLACE|>"""
         ids = self.tokenizer.encode(chat)
 
         text_replace_idx = ids.index(text_replace)
@@ -342,7 +422,7 @@ class NeuTTS:
 
         return ids
 
-    def _infer_torch(self, prompt_ids: list[int]) -> str:
+    def _infer_torch(self, prompt_ids: list[int], temperature: float = 1.0, top_k: int = 50) -> str:
         prompt_tensor = torch.tensor(prompt_ids).unsqueeze(0).to(self.backbone.device)
         speech_end_id = self.tokenizer.convert_tokens_to_ids("<|SPEECH_GENERATION_END|>")
         with torch.no_grad():
@@ -351,8 +431,8 @@ class NeuTTS:
                 max_length=self.max_context,
                 eos_token_id=speech_end_id,
                 do_sample=True,
-                temperature=1.0,
-                top_k=50,
+                temperature=temperature,
+                top_k=top_k,
                 use_cache=True,
                 min_new_tokens=50,
             )
@@ -362,36 +442,64 @@ class NeuTTS:
         )
         return output_str
 
-    def _infer_ggml(self, ref_codes: list[int], ref_text: str, input_text: str) -> str:
-        ref_text = self._to_phones(ref_text)
-        input_text = self._to_phones(input_text)
-
+    def _ggml_prompt(
+        self, ref_codes: list[int], ref_text: str, input_text: str, emotion: str | None = None
+    ) -> str:
         codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
-        prompt = (
-            f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_text} {input_text}"
-            f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
+
+        if self.input_format == "phonemes":
+            ref_text = self._to_phones(ref_text)
+            input_text = self._to_phones(input_text)
+            return (
+                f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_text} {input_text}"
+                f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
+            )
+
+        ref_text = _normalize_text(ref_text)
+        input_text = _normalize_text(input_text)
+        if emotion is None:
+            text = f"{ref_text} {input_text}"
+        else:
+            emotion_token = f"<|{emotion.upper()}|>"
+            tokens = self.backbone.tokenize(emotion_token.encode(), add_bos=False, special=True)
+            if len(tokens) != 1:
+                raise ValueError(f"Emotion token {emotion_token} is not in the model vocab.")
+            text = f"{ref_text}{emotion_token}{input_text}"
+        return (
+            f"<|TEXT_PROMPT_START|>{text}<|TEXT_PROMPT_END|>"
+            f"<|SPEECH_GENERATION_START|>{codes_str}"
         )
+
+    def _infer_ggml(
+        self,
+        ref_codes: list[int],
+        ref_text: str,
+        input_text: str,
+        emotion: str | None = None,
+        temperature: float = 1.0,
+        top_k: int = 50,
+    ) -> str:
+        prompt = self._ggml_prompt(ref_codes, ref_text, input_text, emotion)
         output = self.backbone(
             prompt,
             max_tokens=self.max_context,
-            temperature=1.0,
-            top_k=50,
+            temperature=temperature,
+            top_k=top_k,
             stop=["<|SPEECH_GENERATION_END|>"],
         )
         output_str = output["choices"][0]["text"]
         return output_str
 
     def _infer_stream_ggml(
-        self, ref_codes: torch.Tensor, ref_text: str, input_text: str
+        self,
+        ref_codes: torch.Tensor,
+        ref_text: str,
+        input_text: str,
+        emotion: str | None = None,
+        temperature: float = 1.0,
+        top_k: int = 50,
     ) -> Generator[np.ndarray, None, None]:
-        ref_text = self._to_phones(ref_text)
-        input_text = self._to_phones(input_text)
-
-        codes_str = "".join([f"<|speech_{idx}|>" for idx in ref_codes])
-        prompt = (
-            f"user: Convert the text to speech:<|TEXT_PROMPT_START|>{ref_text} {input_text}"
-            f"<|TEXT_PROMPT_END|>\nassistant:<|SPEECH_GENERATION_START|>{codes_str}"
-        )
+        prompt = self._ggml_prompt(ref_codes, ref_text, input_text, emotion)
 
         audio_cache: list[np.ndarray] = []
         token_cache: list[str] = [f"<|speech_{idx}|>" for idx in ref_codes]
@@ -401,8 +509,8 @@ class NeuTTS:
         for item in self.backbone(
             prompt,
             max_tokens=self.max_context,
-            temperature=1.0,
-            top_k=50,
+            temperature=temperature,
+            top_k=top_k,
             stop=["<|SPEECH_GENERATION_END|>"],
             stream=True,
         ):

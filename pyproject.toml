@@ -14,12 +14,12 @@ requires-python = ">=3.10, <3.14"
 dependencies = [
     "librosa==0.11.0",
     "neucodec>=0.0.4",
-    "numpy~=2.2.6",
+    "numpy>=2.2.6",
     "phonemizer>=3.0.0",
     "resemble-perth==1.0.1",
     "soundfile==0.13.1",
-    "torch>=2.8.0",
-    "transformers~=4.56.1",
+    "torch==2.8.0",
+    "transformers==5.1.0",
 ]
 
 # Defining optional installations
