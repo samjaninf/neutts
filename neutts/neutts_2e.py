@@ -34,6 +34,8 @@ class NeuTTS2E(NeuTTS):
             codec_device=codec_device,
             seed=seed,
         )
+        if self._supported_emotions is None:
+            self._supported_emotions = list(self.EMOTIONS)
         self._speaker_refs = {}
 
     def _speaker(self, name: str) -> tuple[torch.Tensor, str]:
@@ -45,13 +47,6 @@ class NeuTTS2E(NeuTTS):
             self._speaker_refs[name] = (codes, text)
         return self._speaker_refs[name]
 
-    @classmethod
-    def _validate_emotion(cls, emotion: str) -> None:
-        if emotion not in cls.EMOTIONS:
-            raise ValueError(
-                f"Unknown emotion '{emotion}'. Available emotions: {list(cls.EMOTIONS)}"
-            )
-
     def infer(
         self,
         text: str,
@@ -60,7 +55,6 @@ class NeuTTS2E(NeuTTS):
         temperature: float = 1.0,
         top_k: int = 50,
     ) -> np.ndarray:
-        self._validate_emotion(emotion)
         ref_codes, ref_text = self._speaker(speaker)
         return super().infer(
             text, ref_codes, ref_text, emotion=emotion, temperature=temperature, top_k=top_k
@@ -74,7 +68,6 @@ class NeuTTS2E(NeuTTS):
         temperature: float = 1.0,
         top_k: int = 50,
     ):
-        self._validate_emotion(emotion)
         ref_codes, ref_text = self._speaker(speaker)
         return super().infer_stream(
             text, ref_codes, ref_text, emotion=emotion, temperature=temperature, top_k=top_k

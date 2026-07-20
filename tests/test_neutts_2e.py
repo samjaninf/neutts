@@ -82,6 +82,20 @@ def test_phoneme_model_rejects_emotion():
     assert model._check_emotion(None) is None
 
 
+def test_supported_emotions_validation():
+    model = NeuTTS.__new__(NeuTTS)
+    model.input_format = "BPE"
+    model._supported_emotions = list(NeuTTS2E.EMOTIONS)
+    with pytest.raises(ValueError, match="Supported emotions"):
+        model._check_emotion("furious")
+    for emotion in NeuTTS2E.EMOTIONS:
+        model._check_emotion(emotion)
+    assert model._check_emotion("neutral") is None
+
+    model._supported_emotions = None
+    assert model._check_emotion("furious") == "furious"  # deferred to the vocab check
+
+
 def test_speaker_data_complete():
     assert NeuTTS2E.SPEAKERS == ("emily", "paul", "sophie", "steven")
     for name in NeuTTS2E.SPEAKERS:
@@ -97,9 +111,5 @@ def test_2e_validation():
 
     with pytest.raises(ValueError, match="Unknown speaker"):
         model._speaker("dave")
-    with pytest.raises(ValueError, match="Unknown emotion"):
-        model._validate_emotion("furious")
-    for emotion in NeuTTS2E.EMOTIONS:
-        model._validate_emotion(emotion)
     codes, ref_text = model._speaker("emily")
     assert len(codes) > 0 and len(ref_text) > 0

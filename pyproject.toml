@@ -25,9 +25,9 @@ dependencies = [
 
 # Defining optional installations
 [project.optional-dependencies]
-llama = ["llama-cpp-python"]
+llama = ["llama-cpp-python", "gguf"]
 onnx = ["onnxruntime"]
-all = ["llama-cpp-python", "onnxruntime"]
+all = ["llama-cpp-python", "gguf", "onnxruntime"]
 
 [tool.scikit-build]
 # Include the espeak-ng-data directory that cmake copies into the package

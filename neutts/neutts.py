@@ -155,6 +155,22 @@ class NeuTTS:
         # Load watermarker (optional)
         self.watermarker = _load_watermarker()
 
+    @staticmethod
+    def _read_gguf_array_meta(model_path):
+        # llama-cpp's metadata dict drops array fields; recover them with the gguf package
+        try:
+            from gguf import GGUFReader, GGUFValueType
+        except ImportError:
+            return {}
+        result = {}
+        for name, field in GGUFReader(model_path, "r").fields.items():
+            if field.types and field.types[0] == GGUFValueType.ARRAY:
+                try:
+                    result[name] = field.contents()
+                except Exception:
+                    pass
+        return result
+
     def _load_phonemizer(self, language, backbone_repo):
         if not language:
             if BACKBONE_LANGUAGE_MAP.get(backbone_repo) is not None:
@@ -213,6 +229,8 @@ class NeuTTS:
                 template = self.backbone.metadata.get("tokenizer.chat_template", "")
                 is_bpe = template and "Convert the text to speech" not in template
                 self.input_format = "BPE" if is_bpe else "phonemes"
+            gguf_arrays = self._read_gguf_array_meta(self.backbone.model_path)
+            self._supported_emotions = gguf_arrays.get("neuphonic.supported_emotions")
 
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(backbone_repo)
@@ -221,6 +239,7 @@ class NeuTTS:
             ).to(torch.device(backbone_device))
             neuphonic_cfg = getattr(self.backbone.config, "neuphonic", None) or {}
             self.input_format = neuphonic_cfg.get("input_format", "phonemes")
+            self._supported_emotions = neuphonic_cfg.get("supported_emotions")
 
     def _load_codec(self, codec_repo, codec_device):
 
@@ -345,8 +364,13 @@ class NeuTTS:
     def _check_emotion(self, emotion: str | None) -> str | None:
         if emotion == "neutral":
             emotion = None
-        if emotion is not None and self.input_format == "phonemes":
-            raise ValueError("Emotion is only supported by BPE models.")
+        if emotion is not None:
+            if self.input_format == "phonemes":
+                raise ValueError("Emotion is only supported by BPE models.")
+            if self._supported_emotions is not None and emotion not in self._supported_emotions:
+                raise ValueError(
+                    f"Unknown emotion '{emotion}'. Supported emotions: {self._supported_emotions}"
+                )
         return emotion
 
     def encode_reference(self, ref_audio_path: str | Path):
