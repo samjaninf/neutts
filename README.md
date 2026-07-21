@@ -11,6 +11,8 @@ HuggingFace 🤗:
    - NeuTTS-Nano-Spanish: [Model](https://huggingface.co/neuphonic/neutts-nano-spanish), [Q8 GGUF](https://huggingface.co/neuphonic/neutts-nano-spanish-q8-gguf), [Q4 GGUF](https://huggingface.co/neuphonic/neutts-nano-spanish-q4-gguf)
    - [Multilingual Space](https://huggingface.co/spaces/neuphonic/neutts-nano-multilingual-collection)
 
+- NeuTTS-2E (English, emotional): [Model](https://huggingface.co/neuphonic/neutts-2e), [Q8 GGUF](https://huggingface.co/neuphonic/neutts-2e-q8-gguf), [Q4 GGUF](https://huggingface.co/neuphonic/neutts-2e-q4-gguf), [Space](https://huggingface.co/spaces/neuphonic/neutts-2e)
+
 [NeuTTS-Nano Demo Video](https://github.com/user-attachments/assets/629ec5b2-4818-4fa6-987a-99fcbadc56bc)
 
 _Created by [Neuphonic](http://neuphonic.com/) - building faster, smaller, on-device voice AI_
@@ -42,12 +44,34 @@ NeuTTS models are built from small LLM backbones - lightweight yet capable langu
 - **Power Consumption**: Optimised for mobile and embedded devices
 
 
-|  | NeuTTS-Air | NeuTTS-Nano Models |
-|---|---:|---:|
-| **# Params (Active)** | ~360m | ~120m |
-| **# Params (Emb + Active)** | ~552m | ~229m |
-| **Cloning** | Yes | Yes |
-| **License** | Apache 2.0 | NeuTTS Open License 1.0 |
+|  | NeuTTS-Air | NeuTTS-Nano Models | NeuTTS-2E |
+|---|---:|---:|---:|
+| **# Params (Active)** | ~360m | ~120m | ~125m |
+| **# Params (Emb + Active)** | ~552m | ~229m | ~236m |
+| **Input Format** | Phonemes | Phonemes | Text |
+| **License** | Apache 2.0 | NeuTTS Open License 1.0 | NeuTTS Open License 1.0 |
+
+### Backbone Variants
+
+| Model | PyTorch repo | GGUF repos | Cloning | Emotions | Streaming |
+|---|---|---|---|---|---|
+| NeuTTS-Air | `neuphonic/neutts-air` | `neuphonic/neutts-air-{q4,q8}-gguf` | Yes | — | GGUF only |
+| NeuTTS-Nano | `neuphonic/neutts-nano` | `neuphonic/neutts-nano-{q4,q8}-gguf` | Yes | — | GGUF only |
+| NeuTTS-Nano German | `neuphonic/neutts-nano-german` | `neuphonic/neutts-nano-german-{q4,q8}-gguf` | Yes | — | GGUF only |
+| NeuTTS-Nano French | `neuphonic/neutts-nano-french` | `neuphonic/neutts-nano-french-{q4,q8}-gguf` | Yes | — | GGUF only |
+| NeuTTS-Nano Spanish | `neuphonic/neutts-nano-spanish` | `neuphonic/neutts-nano-spanish-{q4,q8}-gguf` | Yes | — | GGUF only |
+| NeuTTS-2E | `neuphonic/neutts-2e` | `neuphonic/neutts-2e-{q4,q8}-gguf` | 4 fixed speakers | 6 + neutral | GGUF only |
+
+### Codec Variants
+
+| Codec | Engine | Encode | Decode | GPU support |
+|---|---|---|---|---|
+| `neuphonic/neucodec` | PyTorch | Yes | Yes | Yes |
+| `neuphonic/distill-neucodec` | PyTorch | Yes | Yes | Yes |
+| `neuphonic/neucodec-onnx-decoder` | ONNX | — | Yes | — |
+| `neuphonic/neucodec-onnx-decoder-int8` | ONNX | — | Yes | — |
+
+Any backbone can be paired with any codec. Decoder-only (ONNX) codecs require pre-encoded references — these ship with the repo for all bundled voices, including the NeuTTS-2E speakers.
 
 ## Throughput Benchmarking
 
@@ -160,7 +184,7 @@ python -m examples.basic_example \
   --ref_text samples/jo.txt
 ```
 
-To specify a particular model repo for the backbone or codec, add the `--backbone` and `--codec` arguments. Available backbones are listed in [NeuTTS-Air](https://huggingface.co/collections/neuphonic/neutts-air) and [NeuTTS-Nano Multilingual Collection](https://huggingface.co/collections/neuphonic/neutts-nano-multilingual-collection) huggingface collections.
+To specify a particular model repo for the backbone or codec, add the `--backbone` and `--codec` arguments. Available backbones are listed in the [NeuTTS-Air](https://huggingface.co/collections/neuphonic/neutts-air), [NeuTTS-Nano Multilingual Collection](https://huggingface.co/collections/neuphonic/neutts-nano-multilingual-collection) and [NeuTTS-2E](https://huggingface.co/collections/neuphonic/neutts-2e) huggingface collections.
 
 > [!CAUTION]
 > If you are using a non-English backbone, it is highly recommended to use a same-language reference for best performance. See the 'example reference files' section below to select an appropriate example reference.
