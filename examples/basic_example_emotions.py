@@ -57,7 +57,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--backbone",
         type=str,
-        default="neuphonic/qwen3-0.2b-en-emotional-grpo-500-16-06-26",
+        default="neuphonic/neutts-2e",
         help="Huggingface repo or local path containing the backbone checkpoint",
     )
     parser.add_argument(

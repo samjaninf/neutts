@@ -224,7 +224,7 @@ python -m examples.basic_example_emotions \
   --emotion happy
 ```
 
-Streaming works the same way via `examples.basic_streaming_example_emotions` with a GGUF `--backbone`. Pass `seed` to `NeuTTS2E` (or `--seed` to the examples) for reproducible generation.
+Streaming works the same way via `examples.basic_streaming_example_emotions`, which uses the GGUF backbones (`neuphonic/neutts-2e-q8-gguf` by default, or `neuphonic/neutts-2e-q4-gguf` via `--backbone`). Pass `seed` to `NeuTTS2E` (or `--seed` to the examples) for reproducible generation.
 
 ## Preparing References for Cloning
 

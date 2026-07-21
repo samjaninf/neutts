@@ -189,7 +189,7 @@ class NeuTTS:
     def _load_backbone(self, backbone_repo, backbone_device):
         print(f"Loading backbone from: {backbone_repo} on {backbone_device} ...")
 
-        if backbone_repo.endswith("gguf"):
+        if backbone_repo.lower().endswith("gguf"):
 
             try:
                 from llama_cpp import Llama

@@ -11,9 +11,18 @@ except ImportError:
 
 
 def main(
-    input_text, speaker, emotion, backbone, device, codec, codec_device, seed, temperature, top_k
+    input_text,
+    speaker,
+    emotion,
+    backbone,
+    device,
+    codec,
+    codec_device,
+    seed,
+    temperature,
+    top_k,
 ):
-    assert backbone.endswith(
+    assert backbone.lower().endswith(
         "gguf"
     ), "Must be a GGUF ckpt as streaming is only currently supported by llama-cpp."
 
@@ -74,8 +83,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--backbone",
         type=str,
-        required=True,
-        help="Huggingface repo or local path containing the GGUF backbone checkpoint",
+        default="neuphonic/neutts-2e-q8-gguf",
+        help="Huggingface repo or local path containing the backbone checkpoint. Must be GGUF.",
     )
     parser.add_argument(
         "--device",

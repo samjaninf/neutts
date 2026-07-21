@@ -53,3 +53,24 @@ python -m examples.basic_streaming_example \
   --ref_text samples/jo.txt \
   --backbone neuphonic/neutts-nano-q4-gguf
 ```
+
+### Emotional TTS (NeuTTS-2E)
+
+NeuTTS-2E uses fixed speakers with bundled pre-encoded references, so the emotional examples take a `--speaker` and `--emotion` instead of reference arguments:
+
+```bash
+python -m examples.basic_example_emotions \
+  --input_text "I can't believe it's finally here!" \
+  --speaker emily \
+  --emotion happy
+```
+
+Streaming (GGUF backbones, `neuphonic/neutts-2e-q8-gguf` by default):
+
+```bash
+python -m examples.basic_streaming_example_emotions \
+  --input_text "I can't believe it's finally here!" \
+  --speaker emily \
+  --emotion happy \
+  --backbone neuphonic/neutts-2e-q4-gguf
+```

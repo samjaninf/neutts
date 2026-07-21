@@ -21,7 +21,7 @@ class NeuTTS2E(NeuTTS):
 
     def __init__(
         self,
-        backbone_repo="neuphonic/qwen3-0.2b-en-emotional-grpo-500-16-06-26",
+        backbone_repo="neuphonic/neutts-2e",
         backbone_device="cpu",
         codec_repo="neuphonic/neucodec",
         codec_device="cpu",

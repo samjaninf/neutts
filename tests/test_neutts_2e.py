@@ -9,7 +9,7 @@ from neutts import NeuTTS, NeuTTS2E
 
 _normalize_text = import_module(NeuTTS.__module__)._normalize_text
 
-EMOTIONAL_BACKBONE = "neuphonic/qwen3-0.2b-en-emotional-grpo-500-16-06-26"
+EMOTIONAL_BACKBONE = "neuphonic/neutts-2e"
 
 REF_TEXT = "Last. So we just need to make the rest of the connection."
 GEN_TEXT = "Hello there, how are you today?"
