@@ -96,6 +96,22 @@ def test_supported_emotions_validation():
     assert model._check_emotion("furious") == "furious"  # deferred to the vocab check
 
 
+def test_device_validation(tmp_path):
+    model = NeuTTS.__new__(NeuTTS)
+    with pytest.raises(ValueError, match="valid and available torch device"):
+        model._load_backbone("some/torch-repo", "gpu")
+    if not torch.cuda.is_available():
+        with pytest.raises(ValueError, match="valid and available torch device"):
+            model._load_backbone("some/torch-repo", "cuda")
+
+    onnx_path = tmp_path / "model.onnx"
+    onnx_path.touch()
+    with pytest.raises(ValueError, match="only currently run on CPU"):
+        model._load_codec(str(onnx_path), "mps")
+    with pytest.raises(ValueError, match="only currently run on CPU"):
+        model._load_codec("neuphonic/neucodec-onnx-decoder", "mps")
+
+
 def test_speaker_data_complete():
     assert NeuTTS2E.SPEAKERS == ("emily", "paul", "sophie", "steven")
     for name in NeuTTS2E.SPEAKERS:

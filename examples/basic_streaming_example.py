@@ -194,7 +194,7 @@ if __name__ == "__main__":
         "--device",
         type=str,
         default="cpu",
-        help="Device for the backbone, e.g. cpu or gpu",
+        help="Device for the backbone, e.g. cpu, mps, cuda",
     )
     parser.add_argument(
         "--codec",
@@ -206,7 +206,7 @@ if __name__ == "__main__":
         "--codec_device",
         type=str,
         default="cpu",
-        help="Device for the codec, e.g. cpu, mps or cuda (onnx codecs are cpu only)",
+        help="Device for the codec, e.g. cpu, mps, cuda (onnx codecs are cpu only)",
     )
     parser.add_argument(
         "--seed",

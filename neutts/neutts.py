@@ -44,6 +44,17 @@ def _normalize_text(text: str) -> str:
     return unicodedata.normalize("NFKC", text.translate(_QUOTE_MAP))
 
 
+def _torch_device(device, param):
+    try:
+        torch.empty(0, device=device)
+    except (RuntimeError, AssertionError) as e:
+        raise ValueError(
+            f"{param} '{device}' is not a valid and available torch device "
+            f"(e.g. cpu, mps, cuda): {e}"
+        ) from e
+    return torch.device(device)
+
+
 def _n_perf_cores() -> int:
     # On Apple silicon, keep generation threads off the efficiency cores.
     if sys.platform == "darwin":
@@ -203,7 +214,7 @@ class NeuTTS:
             seed = self._seed if self._seed is not None else random.randint(0, 2**32)
             print(f"Using seed {seed}")
 
-            use_gpu = backbone_device.lower() in ("gpu", "metal", "mps", "cuda")
+            use_gpu = backbone_device.lower() != "cpu"
             gguf_kwargs = dict(
                 verbose=False,
                 n_gpu_layers=-1 if use_gpu else 0,
@@ -233,10 +244,11 @@ class NeuTTS:
             self._supported_emotions = gguf_arrays.get("neuphonic.supported_emotions")
 
         else:
+            device = _torch_device(backbone_device, "backbone_device")
             self.tokenizer = AutoTokenizer.from_pretrained(backbone_repo)
             self.backbone = AutoModelForCausalLM.from_pretrained(
                 backbone_repo, dtype=torch.bfloat16
-            ).to(torch.device(backbone_device))
+            ).to(device)
             neuphonic_cfg = getattr(self.backbone.config, "neuphonic", None) or {}
             self.input_format = neuphonic_cfg.get("input_format", "phonemes")
             self._supported_emotions = neuphonic_cfg.get("supported_emotions")
@@ -245,46 +257,46 @@ class NeuTTS:
 
         print(f"Loading codec from: {codec_repo} on {codec_device} ...")
 
-        if codec_repo.endswith(".onnx") and os.path.isfile(codec_repo):
+        if "onnx" in codec_repo:
+            if codec_device != "cpu":
+                raise ValueError("Onnx decoders only currently run on CPU.")
+
             try:
                 from neucodec import NeuCodecOnnxDecoder
             except ImportError as e:
                 raise ImportError(
-                    "Failed to import NeuCodecOnnxDecoder. "
-                    "Make sure `neucodec` and `onnxruntime` are installed."
+                    "Failed to import onnx decoder support."
+                    " Ensure you have onnxruntime installed as well as neucodec >= 0.0.4."
                 ) from e
 
-            self.codec = NeuCodecOnnxDecoder(codec_repo)
+            if codec_repo.endswith(".onnx") and os.path.isfile(codec_repo):
+                self.codec = NeuCodecOnnxDecoder(codec_repo)
+            elif codec_repo in (
+                "neuphonic/neucodec-onnx-decoder",
+                "neuphonic/neucodec-onnx-decoder-int8",
+            ):
+                self.codec = NeuCodecOnnxDecoder.from_pretrained(codec_repo)
+            else:
+                raise ValueError(
+                    "Invalid codec repo! Must be one of: 'neuphonic/neucodec',"
+                    " 'neuphonic/distill-neucodec', 'neuphonic/neucodec-onnx-decoder',"
+                    " 'neuphonic/neucodec-onnx-decoder-int8', or a local path to a .onnx decoder."
+                )
             self._is_onnx_codec = True
+            return
 
         match codec_repo:
             case "neuphonic/neucodec":
                 self.codec = NeuCodec.from_pretrained(codec_repo)
-                self.codec.eval().to(codec_device)
+                self.codec.eval().to(_torch_device(codec_device, "codec_device"))
             case "neuphonic/distill-neucodec":
                 self.codec = DistillNeuCodec.from_pretrained(codec_repo)
-                self.codec.eval().to(codec_device)
-            case "neuphonic/neucodec-onnx-decoder" | "neuphonic/neucodec-onnx-decoder-int8":
-
-                if codec_device != "cpu":
-                    raise ValueError("Onnx decoder only currently runs on CPU.")
-
-                try:
-                    from neucodec import NeuCodecOnnxDecoder
-                except ImportError as e:
-                    raise ImportError(
-                        "Failed to import the onnx decoder."
-                        " Ensure you have onnxruntime installed as well as neucodec >= 0.0.4."
-                    ) from e
-
-                self.codec = NeuCodecOnnxDecoder.from_pretrained(codec_repo)
-                self._is_onnx_codec = True
-
+                self.codec.eval().to(_torch_device(codec_device, "codec_device"))
             case _:
                 raise ValueError(
-                    "Invalid codec repo! Must be one of:"
-                    " 'neuphonic/neucodec', 'neuphonic/distill-neucodec',"
-                    " 'neuphonic/neucodec-onnx-decoder'."
+                    "Invalid codec repo! Must be one of: 'neuphonic/neucodec',"
+                    " 'neuphonic/distill-neucodec', 'neuphonic/neucodec-onnx-decoder',"
+                    " 'neuphonic/neucodec-onnx-decoder-int8', or a local path to a .onnx decoder."
                 )
 
     def infer(
