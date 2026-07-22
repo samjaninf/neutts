@@ -29,9 +29,7 @@ def audio_player_thread(audio_queue, stream, prefill_chunks=0):
             audio_queue.task_done()
             return
         for i in range(0, len(chunk), PLAYBACK_CHUNK_BYTES):
-            stream.write(
-                chunk[i : i + PLAYBACK_CHUNK_BYTES], exception_on_underflow=False
-            )
+            stream.write(chunk[i : i + PLAYBACK_CHUNK_BYTES], exception_on_underflow=False)
         audio_queue.task_done()
 
     while True:
@@ -47,7 +45,18 @@ def audio_player_thread(audio_queue, stream, prefill_chunks=0):
         audio_queue.task_done()
 
 
-def main(input_text, ref_codes_path, ref_text, backbone):
+def main(
+    input_text,
+    ref_codes_path,
+    ref_text,
+    backbone,
+    device,
+    codec,
+    codec_device,
+    seed,
+    temperature,
+    top_k,
+):
 
     assert backbone in [
         "neuphonic/neutts-air-q4-gguf",
@@ -65,9 +74,10 @@ def main(input_text, ref_codes_path, ref_text, backbone):
     # Initialize NeuTTS with the desired model and codec
     tts = NeuTTS(
         backbone_repo=backbone,
-        backbone_device="cpu",
-        codec_repo="neuphonic/neucodec-onnx-decoder",
-        codec_device="cpu",
+        backbone_device=device,
+        codec_repo=codec,
+        codec_device=codec_device,
+        seed=seed,
     )
 
     input_text = _read_if_path(input_text)
@@ -79,9 +89,7 @@ def main(input_text, ref_codes_path, ref_text, backbone):
 
     print(f"Generating audio for input text: {input_text}")
     p = pyaudio.PyAudio()
-    stream = p.open(
-        format=pyaudio.paInt16, channels=1, rate=tts.sample_rate, output=True
-    )
+    stream = p.open(format=pyaudio.paInt16, channels=1, rate=tts.sample_rate, output=True)
 
     audio_queue = queue.Queue()
     player = threading.Thread(target=audio_player_thread, args=(audio_queue, stream))
@@ -96,7 +104,9 @@ def main(input_text, ref_codes_path, ref_text, backbone):
     print("Streaming...")
     print("-" * 80)
 
-    for chunk in tts.infer_stream(input_text, ref_codes, ref_text):
+    for chunk in tts.infer_stream(
+        input_text, ref_codes, ref_text, temperature=temperature, top_k=top_k
+    ):
         chunk_count += 1
         now = time.perf_counter()
         gen_duration = now - last_yield_time
@@ -175,16 +185,46 @@ if __name__ == "__main__":
         help="Reference text corresponding to the reference audio",
     )
     parser.add_argument(
-        "--output_path",
-        type=str,
-        default="output.wav",
-        help="Path to save the output audio",
-    )
-    parser.add_argument(
         "--backbone",
         type=str,
         default="neuphonic/neutts-nano-q8-gguf",
         help="Huggingface repo containing the backbone checkpoint. Must be GGUF.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Device for the backbone, e.g. cpu, mps, cuda",
+    )
+    parser.add_argument(
+        "--codec",
+        type=str,
+        default="neuphonic/neucodec-onnx-decoder",
+        help="Huggingface repo containing the codec checkpoint",
+    )
+    parser.add_argument(
+        "--codec_device",
+        type=str,
+        default="cpu",
+        help="Device for the codec, e.g. cpu, mps, cuda (onnx codecs are cpu only)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional seed for reproducible generation",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature",
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=50,
+        help="Top-K sampling cutoff",
     )
     args = parser.parse_args()
     main(
@@ -192,4 +232,10 @@ if __name__ == "__main__":
         ref_codes_path=args.ref_codes,
         ref_text=args.ref_text,
         backbone=args.backbone,
+        device=args.device,
+        codec=args.codec,
+        codec_device=args.codec_device,
+        seed=args.seed,
+        temperature=args.temperature,
+        top_k=args.top_k,
     )
