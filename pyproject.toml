@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "neutts"
-version = "1.3.0"
+version = "1.4.0"
 authors = [
   { name="neuphonic", email="general@neuphonic.com" },
 ]
