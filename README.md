@@ -11,7 +11,7 @@ HuggingFace 🤗:
    - NeuTTS-Nano-Spanish: [Model](https://huggingface.co/neuphonic/neutts-nano-spanish), [Q8 GGUF](https://huggingface.co/neuphonic/neutts-nano-spanish-q8-gguf), [Q4 GGUF](https://huggingface.co/neuphonic/neutts-nano-spanish-q4-gguf)
    - [Multilingual Space](https://huggingface.co/spaces/neuphonic/neutts-nano-multilingual-collection)
 
-- NeuTTS-2E (English, emotional): [Model](https://huggingface.co/neuphonic/neutts-2e), [Q8 GGUF](https://huggingface.co/neuphonic/neutts-2e-q8-gguf), [Q4 GGUF](https://huggingface.co/neuphonic/neutts-2e-q4-gguf), [Space](https://huggingface.co/spaces/neuphonic/neutts-2e)
+- NeuTTS-2E (English, emotional control): [Model](https://huggingface.co/neuphonic/neutts-2e), [Q8 GGUF](https://huggingface.co/neuphonic/neutts-2e-q8-gguf), [Q4 GGUF](https://huggingface.co/neuphonic/neutts-2e-q4-gguf), [Space](https://huggingface.co/spaces/neuphonic/neutts-2e)
 
 [NeuTTS-Nano Demo Video](https://github.com/user-attachments/assets/629ec5b2-4818-4fa6-987a-99fcbadc56bc)
 
@@ -248,7 +248,11 @@ python -m examples.basic_example_emotions \
   --emotion happy
 ```
 
-Streaming works the same way via `examples.basic_streaming_example_emotions`, which uses the GGUF backbones (`neuphonic/neutts-2e-q8-gguf` by default, or `neuphonic/neutts-2e-q4-gguf` via `--backbone`). Pass `seed` to `NeuTTS2E` (or `--seed` to the examples) for reproducible generation.
+Streaming works the same way via `examples.basic_streaming_example_emotions`, which uses the GGUF backbones (`neuphonic/neutts-2e-q8-gguf` by default, or `neuphonic/neutts-2e-q4-gguf` via `--backbone`).
+
+### Reproducibility
+
+Generation is sampled, and every call prints the seed it used. With no seed set, each call draws a fresh random seed, so repeated calls give different takes — to recover a take you liked, rerun with its printed seed. Passing `seed` to `NeuTTS`/`NeuTTS2E` (or `--seed` to the examples) pins it: the same inputs and seed always produce identical audio, on both the PyTorch and GGUF backbones, batch or streaming.
 
 ## Preparing References for Cloning
 

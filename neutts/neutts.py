@@ -153,8 +153,7 @@ class NeuTTS:
         # HF tokenizer
         self.tokenizer = None
 
-        self._seed = seed if seed is not None else random.randint(0, 2**32)
-        print(f"Using seed {self._seed}")
+        self._seed = seed
 
         self._load_backbone(backbone_repo, backbone_device)
 
@@ -325,7 +324,7 @@ class NeuTTS:
         if self._is_quantized_model:
             output_str = self._infer_ggml(ref_codes, ref_text, text, emotion, temperature, top_k)
         else:
-            torch.manual_seed(self._seed)
+            torch.manual_seed(self._call_seed())
             prompt_ids = self._apply_chat_template(ref_codes, ref_text, text, emotion)
             output_str = self._infer_torch(prompt_ids, temperature, top_k)
 
@@ -369,6 +368,13 @@ class NeuTTS:
 
         else:
             raise NotImplementedError("Streaming is not implemented for the torch backend!")
+
+    def _call_seed(self) -> int:
+        # A fixed seed pins every call; otherwise each call draws a fresh seed.
+        # The print makes any unseeded take recoverable by passing its seed.
+        seed = self._seed if self._seed is not None else random.randint(0, 2**32)
+        print(f"Using seed {seed}")
+        return seed
 
     def _check_emotion(self, emotion: str | None) -> str | None:
         if emotion == "neutral":
@@ -538,7 +544,7 @@ class NeuTTS:
             temperature=temperature,
             top_k=top_k,
             stop=["<|SPEECH_GENERATION_END|>"],
-            seed=self._seed,
+            seed=self._call_seed(),
         )
         output_str = output["choices"][0]["text"]
         return output_str
@@ -568,7 +574,7 @@ class NeuTTS:
             top_k=top_k,
             stop=["<|SPEECH_GENERATION_END|>"],
             stream=True,
-            seed=self._seed,
+            seed=self._call_seed(),
         ):
             output_str = item["choices"][0]["text"]
             token_cache.append(output_str)

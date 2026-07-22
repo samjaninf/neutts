@@ -18,8 +18,8 @@ dependencies = [
     "phonemizer>=3.0.0",
     "resemble-perth==1.0.1",
     "soundfile==0.13.1",
-    "torch==2.8.0",
-    "torchaudio==2.8.0",
+    "torch>=2.8.0",
+    "torchaudio>=2.8.0",
     "transformers==5.1.0",
 ]
 
