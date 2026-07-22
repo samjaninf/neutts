@@ -46,13 +46,15 @@ if __name__ == "__main__":
         "--speaker",
         type=str,
         default="emily",
-        help="One of the bundled speakers: emily, paul, sophie, steven",
+        choices=list(NeuTTS2E.SPEAKERS),
+        help="One of the bundled speakers",
     )
     parser.add_argument(
         "--emotion",
         type=str,
         default="neutral",
-        help="One of: angry, disgusted, fearful, happy, neutral, sad, surprised",
+        choices=list(NeuTTS2E.EMOTIONS),
+        help="Emotion to generate with",
     )
     parser.add_argument(
         "--backbone",

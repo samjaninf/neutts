@@ -56,7 +56,7 @@ python -m examples.basic_streaming_example \
 
 ### Emotional TTS (NeuTTS-2E)
 
-NeuTTS-2E uses fixed speakers with bundled pre-encoded references, so the emotional examples take a `--speaker` and `--emotion` instead of reference arguments:
+NeuTTS-2E uses fixed speakers with bundled pre-encoded references, so the emotional examples take a `--speaker` (`emily`, `paul`, `sophie`, `steven`) and an `--emotion` (`angry`, `disgusted`, `fearful`, `happy`, `neutral`, `sad`, `surprised`) instead of reference arguments:
 
 ```bash
 python -m examples.basic_example_emotions \

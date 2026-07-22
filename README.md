@@ -111,7 +111,7 @@ We include benchmarks on four devices: Galaxy A25 5G, AMD Ryzen 9HX 370, iMac M4
    pip install -e .
    ```
 
-   Alternatively to install all dependencies, including `onnxruntime` and `llama-cpp-python` (equivalent to steps 3 and 4 below):
+   Alternatively to install all dependencies, including `onnxruntime` and `llama-cpp-python` (equivalent to steps 2 and 3 below):
 
    ```bash
    pip install neutts[all]
