@@ -13,7 +13,7 @@ HuggingFace 🤗:
 
 - NeuTTS-2E (English, emotional control): [Model](https://huggingface.co/neuphonic/neutts-2e), [Q8 GGUF](https://huggingface.co/neuphonic/neutts-2e-q8-gguf), [Q4 GGUF](https://huggingface.co/neuphonic/neutts-2e-q4-gguf), [Space](https://huggingface.co/spaces/neuphonic/neutts-2e)
 
-[NeuTTS-Nano Demo Video](https://github.com/user-attachments/assets/629ec5b2-4818-4fa6-987a-99fcbadc56bc)
+[NeuTTS-2E Demo Video](https://github.com/user-attachments/assets/629ec5b2-4818-4fa6-987a-99fcbadc56bc)
 
 _Created by [Neuphonic](http://neuphonic.com/) - building faster, smaller, on-device voice AI_
 
