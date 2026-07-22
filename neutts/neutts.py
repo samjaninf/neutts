@@ -235,7 +235,10 @@ class NeuTTS:
             self.input_format = self.backbone.metadata.get("neuphonic.input_format")
             if self.input_format is None:
                 template = self.backbone.metadata.get("tokenizer.chat_template", "")
-                is_bpe = template and "Convert the text to speech" not in template
+                is_bpe = (
+                    "<|TEXT_PROMPT_START|>" in template
+                    and "Convert the text to speech" not in template
+                )
                 self.input_format = "BPE" if is_bpe else "phonemes"
             gguf_arrays = self._read_gguf_array_meta(self.backbone.model_path)
             self._supported_emotions = gguf_arrays.get("neuphonic.supported_emotions")
